@@ -287,7 +287,7 @@ def register_tools():
 
 
 # Register all tools on startup
-register_tools()
+# register_tools()
 
 # Ensure converter http client is closed when the MCP shuts down
 async def _shutdown_hook():
@@ -306,9 +306,9 @@ def _parse_port(val: str | int | None, default: int = 10000) -> int:
         return default
 
 
-app = mcp.streamable_http_app()
+# app = mcp.streamable_http_app()
 
 
-if __name__ == "__main__":
-    # Run the FastMCP server in streamable-http transport mode (matching working sample)
-    mcp.run(transport="streamable-http")
+# if __name__ == "__main__":
+#     # Run the FastMCP server in streamable-http transport mode (matching working sample)
+#     mcp.run(transport="streamable-http")
