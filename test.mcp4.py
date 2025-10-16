@@ -224,13 +224,16 @@ class OpenAPIConverter:
 # ============================================================
 user_converters = {}
 user_servers = {}
+
+# ============================================================
+# MongoDB Functions
+# ============================================================
 async def init_mongodb():
     """Initialize MongoDB connection"""
     global mongo_client, mongo_db, mongo_collection
     
     try:
-        # Replace <db_password> with actual password from environment
-        mongodb_uri = MONGODB_URI.replace("<db_password>", os.getenv("MONGODB_PASSWORD", ""))
+        # Replace chrisdepallan with actual password from environment
         
         mongo_client = AsyncIOMotorClient(mongodb_uri)
         mongo_db = mongo_client[MONGODB_DATABASE]
@@ -251,22 +254,22 @@ async def load_specs_from_mongodb():
         return
     
     try:
-        logger.info("Loading OpenAPI specs from MongoDB...")
-        
         # Query all documents from the collection
+        # Expected document format:
+        # {
+        #   "user_id": "1",
+        #   "api_url": "https://api.example.com",
+        #   "docs_url": "https://api.example.com/docs/",
+        #   "openapi": {...},
+        #   "uploaded_at": "2025-10-16T10:45:54.084393Z"
+        # }
         cursor = mongo_collection.find({})
         count = 0
         
-        # Convert cursor to list to see all documents
-        docs = await cursor.to_list(length=None)
-        logger.info(f"Retrieved {len(docs)} document(s) from MongoDB")
-        
-        for doc in docs:
+        async for doc in cursor:
             user_id = doc.get("user_id")
-            openapi_spec = doc.get("openapi")
-            base_url = doc.get("api_url")
-            
-            logger.info(f"Processing document - user_id: {user_id}, has_openapi: {openapi_spec is not None}, base_url: {base_url}")
+            openapi_spec = doc.get("openapi")  # Changed from "openapi_spec" to "openapi"
+            base_url = doc.get("api_url")  # Changed from "base_url" to "api_url"
             
             if not user_id:
                 logger.warning(f"Skipping document without user_id: {doc.get('_id')}")
@@ -274,7 +277,6 @@ async def load_specs_from_mongodb():
                 
             if not openapi_spec:
                 logger.warning(f"Skipping document without openapi spec for user {user_id}: {doc.get('_id')}")
-                logger.warning(f"Document keys: {list(doc.keys())}")
                 continue
                 
             if not base_url:
@@ -282,21 +284,20 @@ async def load_specs_from_mongodb():
                 continue
             
             try:
-                logger.info(f"Creating converter for user {user_id}...")
                 converter = OpenAPIConverter(openapi_spec, base_url)
                 server = create_server_from_openapi(user_id, converter)
                 user_converters[user_id] = converter
                 user_servers[user_id] = server
                 tools = converter.create_tools()
-                logger.info(f"✓ Loaded user '{user_id}' from MongoDB with {len(tools)} tools (base_url: {base_url})")
+                logger.info(f"Loaded user {user_id} from MongoDB with {len(tools)} tools (base_url: {base_url})")
                 count += 1
             except Exception as e:
-                logger.error(f"✗ Error loading spec for user {user_id}: {e}", exc_info=True)
+                logger.error(f"Error loading spec for user {user_id}: {e}", exc_info=True)
         
-        logger.info(f"✓ Successfully loaded {count} user spec(s) from MongoDB")
+        logger.info(f"Successfully loaded {count} user spec(s) from MongoDB")
         
     except Exception as e:
-        logger.error(f"✗ Error loading specs from MongoDB: {e}", exc_info=True)
+        logger.error(f"Error loading specs from MongoDB: {e}", exc_info=True)
 
 # ============================================================
 # Temporary: Hardcoded OpenAPI specs (fallback)
@@ -479,26 +480,14 @@ sse = SseServerTransport("/messages/")
 # ============================================================
 async def handle_sse(request: Request):
     """Handle SSE connections"""
-    user_id = request.headers.get("user_id")
-    
-    if not user_id:
-        return JSONResponse(
-            {"error": "user_id header is required"},
-            status_code=400
-        )
-    
-    logger.info(f"SSE connection request for user: {user_id}")
+    user_id = request.headers.get("user_id", "1")  # Default to user 1
+    logger.info(f"SSE connection for user: {user_id}")
     
     if user_id not in user_servers:
-        available_users = list(user_servers.keys())
-        logger.error(f"No server found for user '{user_id}'. Available users: {available_users}")
+        logger.error(f"No server found for user {user_id}. Available users: {list(user_servers.keys())}")
         return JSONResponse(
-            {
-                "error": f"No configuration found for user '{user_id}'",
-                "available_users": available_users,
-                "hint": "Check /debug/mongodb to see loaded users or add this user to MongoDB"
-            },
-            status_code=404
+            {"error": f"No configuration found for user {user_id}. Available users: {list(user_servers.keys())}"},
+            status_code=400
         )
     
     server = user_servers[user_id]
@@ -587,57 +576,8 @@ async def health_check(request: Request):
     return JSONResponse({
         "status": "healthy",
         "active_users": list(user_servers.keys()),
-        "users_info": users_info,
-        "mongodb_connected": mongo_client is not None
+        "users_info": users_info
     })
-
-# ============================================================
-# Debug MongoDB Endpoint
-# ============================================================
-async def debug_mongodb(request: Request):
-    """Debug endpoint to check MongoDB connection and data"""
-    if mongo_collection is None:
-        return JSONResponse({
-            "error": "MongoDB not connected",
-            "mongodb_uri": MONGODB_URI.replace(MONGODB_URI.split('@')[0].split('://')[1], "***"),
-            "database": MONGODB_DATABASE,
-            "collection": MONGODB_COLLECTION
-        })
-    
-    try:
-        # Test connection
-        await mongo_client.admin.command('ping')
-        
-        # Get all documents
-        cursor = mongo_collection.find({})
-        docs = await cursor.to_list(length=None)
-        
-        # Sanitize documents for display
-        sanitized_docs = []
-        for doc in docs:
-            sanitized_docs.append({
-                "_id": str(doc.get("_id")),
-                "user_id": doc.get("user_id"),
-                "api_url": doc.get("api_url"),
-                "docs_url": doc.get("docs_url"),
-                "has_openapi": "openapi" in doc,
-                "openapi_keys": list(doc.get("openapi", {}).keys()) if "openapi" in doc else [],
-                "uploaded_at": doc.get("uploaded_at")
-            })
-        
-        return JSONResponse({
-            "mongodb_connected": True,
-            "database": MONGODB_DATABASE,
-            "collection": MONGODB_COLLECTION,
-            "document_count": len(docs),
-            "documents": sanitized_docs
-        })
-        
-    except Exception as e:
-        return JSONResponse({
-            "error": str(e),
-            "error_type": type(e).__name__
-        }, status_code=500)
 
 # ============================================================
 # Starlette App
@@ -646,7 +586,6 @@ app = Starlette(
     debug=True,
     routes=[
         Route("/health", endpoint=health_check, methods=["GET"]),
-        Route("/debug/mongodb", endpoint=debug_mongodb, methods=["GET"]),
         Route("/upload-spec", endpoint=upload_spec, methods=["POST"]),
         Route("/sse", endpoint=handle_sse, methods=["GET"]),
         Mount("/messages/", app=sse.handle_post_message),
@@ -658,25 +597,16 @@ async def startup():
     """Initialize MongoDB and load specs on startup"""
     logger.info("Starting up...")
     
-    try:
-        # Initialize MongoDB connection (required)
-        await init_mongodb()
-        
-        # Load specs from MongoDB (required)
-        await load_specs_from_mongodb()
-        
-        if len(user_servers) == 0:
-            logger.error("✗ No users loaded! Server will not function properly.")
-            logger.error("Please add documents to MongoDB collection with format:")
-            logger.error('  {"user_id": "...", "api_url": "...", "openapi": {...}}')
-        else:
-            logger.info(f"✓ Startup complete. Total users loaded: {len(user_servers)}")
-            logger.info(f"Available users: {list(user_servers.keys())}")
+    # Initialize MongoDB connection
+    await init_mongodb()
     
-    except Exception as e:
-        logger.error(f"✗ Startup failed: {e}")
-        logger.error("Server requires valid MongoDB connection and data.")
-        raise
+    # Load specs from MongoDB
+    await load_specs_from_mongodb()
+    
+    # Load hardcoded specs as fallback
+    init_hardcoded_specs()
+    
+    logger.info(f"Startup complete. Total users loaded: {len(user_servers)}")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -696,34 +626,39 @@ def main():
     port = 8000
     
     logger.info("=" * 60)
-    logger.info("OpenAPI to MCP SSE Server (MongoDB Only)")
+    logger.info("OpenAPI to MCP SSE Server with MongoDB")
     logger.info("=" * 60)
     logger.info(f"Server running on http://{host}:{port}")
     logger.info("")
     logger.info("Environment Variables:")
-    logger.info(f"  MONGODB_URI - Full MongoDB URI (required)")
+    logger.info(f"  MONGODB_PASSWORD - MongoDB password (required)")
     logger.info(f"  MONGODB_DATABASE - Database name (default: mcp_server)")
     logger.info(f"  MONGODB_COLLECTION - Collection name (default: openapi_specs)")
     logger.info("")
-    logger.info("MongoDB Document Format:")
+    logger.info("MongoDB Document Format (matches your schema):")
     logger.info("  {")
-    logger.info('    "user_id": "chris",')
+    logger.info('    "user_id": "1",')
     logger.info('    "api_url": "https://outbound.byteflow.bot",')
     logger.info('    "docs_url": "https://outbound.byteflow.bot/docs/",')
     logger.info('    "openapi": {')
     logger.info('      "openapi": "3.1.0",')
     logger.info('      "info": {...},')
-    logger.info('      "paths": {...}')
-    logger.info('    }')
+    logger.info('      "paths": {...},')
+    logger.info('      "components": {...}')
+    logger.info('    },')
+    logger.info('    "uploaded_at": "2025-10-16T10:45:54.084393Z"')
     logger.info("  }")
     logger.info("")
     logger.info("Endpoints:")
-    logger.info(f"  GET  /sse              - SSE endpoint (requires user_id header)")
-    logger.info(f"  GET  /health           - Health check")
-    logger.info(f"  GET  /debug/mongodb    - Debug MongoDB connection")
-    logger.info(f"  POST /upload-spec      - Upload spec dynamically")
+    logger.info(f"  POST /upload-spec  - Upload OpenAPI spec (requires user_id header)")
+    logger.info(f"  GET  /sse          - Connect to MCP server (requires user_id header)")
+    logger.info(f"  GET  /health       - Health check and list users")
     logger.info("")
-    logger.info("Note: Server requires MongoDB - no fallback data available")
+    logger.info("Quick Start:")
+    logger.info("  1. Set MONGODB_PASSWORD environment variable")
+    logger.info("  2. Start server - it will load specs from MongoDB")
+    logger.info("  3. Connect with user_id header to http://localhost:8000/sse")
+    logger.info("  4. Check /health to see loaded users")
     logger.info("=" * 60)
     
     uvicorn.run(app, host=host, port=port, log_level="info")
