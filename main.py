@@ -28,6 +28,7 @@ logger = logging.getLogger("openapi-mcp-sse")
 
 # ============================================================
 # MongoDB Configuration
+# Temporary: DB needs to be replaces with supabase  or AWS DocumentDB
 # ============================================================
 MONGODB_URI = os.getenv(
     "MONGODB_URI",
@@ -37,12 +38,19 @@ MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "mcp_server")  # Change this to
 MONGODB_COLLECTION = os.getenv("MONGODB_COLLECTION", "openapi_specs")  # Change this to your collection name
 
 # MongoDB client (initialized on startup)
+# I have need to make a DB in the AWS to Replace this
 mongo_client = None
 mongo_db = None
 mongo_collection = None
 
 # ============================================================
 # OpenAPI to MCP Converter
+# V_8
+# My Magnum Opus 
+# Dont ask why it is V8 and DOnt ask me to change it
+# it needs the json to be  OpenAPI 3.0.1
+# just execute_tool and create_tools  are needed.
+#
 # ============================================================
 
 class OpenAPIConverter:
@@ -300,6 +308,8 @@ async def load_specs_from_mongodb():
 
 # ============================================================
 # Temporary: Hardcoded OpenAPI specs (fallback)
+# Note: MongoDB is now required, so this is just a fallback
+# Note: In production, ensure MongoDB is properly set up, and this just just a appendix thats useless.
 # ============================================================
 HARDCODED_SPECS = {
     "1": {
@@ -489,17 +499,81 @@ async def handle_sse(request: Request):
     
     logger.info(f"SSE connection request for user: {user_id}")
     
+    # Try to load from MongoDB if not already loaded
     if user_id not in user_servers:
-        available_users = list(user_servers.keys())
-        logger.error(f"No server found for user '{user_id}'. Available users: {available_users}")
-        return JSONResponse(
-            {
-                "error": f"No configuration found for user '{user_id}'",
-                "available_users": available_users,
-                "hint": "Check /debug/mongodb to see loaded users or add this user to MongoDB"
-            },
-            status_code=404
-        )
+        logger.info(f"User '{user_id}' not in memory. Attempting to load from MongoDB...")
+        
+        if mongo_collection is not None:
+            try:
+                # Query MongoDB for this specific user
+                doc = await mongo_collection.find_one({"user_id": user_id})
+                
+                if doc:
+                    openapi_spec = doc.get("openapi")
+                    base_url = doc.get("api_url")
+                    
+                    if openapi_spec and base_url:
+                        logger.info(f"Found spec for user '{user_id}' in MongoDB. Loading...")
+                        try:
+                            converter = OpenAPIConverter(openapi_spec, base_url)
+                            server = create_server_from_openapi(user_id, converter)
+                            user_converters[user_id] = converter
+                            user_servers[user_id] = server
+                            tools = converter.create_tools()
+                            logger.info(f"✓ Successfully loaded user '{user_id}' from MongoDB with {len(tools)} tools")
+                        except Exception as e:
+                            logger.error(f"✗ Error creating server for user '{user_id}': {e}", exc_info=True)
+                            available_users = list(user_servers.keys())
+                            return JSONResponse(
+                                {
+                                    "error": f"Failed to load user '{user_id}': {str(e)}",
+                                    "available_users": available_users
+                                },
+                                status_code=500
+                            )
+                    else:
+                        logger.warning(f"MongoDB document for user '{user_id}' missing openapi or api_url")
+                        available_users = list(user_servers.keys())
+                        return JSONResponse(
+                            {
+                                "error": f"User '{user_id}' found in MongoDB but missing required fields (openapi or api_url)",
+                                "available_users": available_users
+                            },
+                            status_code=400
+                        )
+                else:
+                    logger.warning(f"User '{user_id}' not found in MongoDB")
+                    available_users = list(user_servers.keys())
+                    return JSONResponse(
+                        {
+                            "error": f"No configuration found for user '{user_id}'",
+                            "available_users": available_users,
+                            "hint": "Add this user to MongoDB with format: {\"user_id\": \"...\", \"api_url\": \"...\", \"openapi\": {...}}"
+                        },
+                        status_code=404
+                    )
+            
+            except Exception as e:
+                logger.error(f"Error querying MongoDB for user '{user_id}': {e}", exc_info=True)
+                available_users = list(user_servers.keys())
+                return JSONResponse(
+                    {
+                        "error": f"Error loading user from MongoDB: {str(e)}",
+                        "available_users": available_users
+                    },
+                    status_code=500
+                )
+        else:
+            logger.error("MongoDB not connected, cannot auto-load user")
+            available_users = list(user_servers.keys())
+            return JSONResponse(
+                {
+                    "error": f"No configuration found for user '{user_id}'. MongoDB not connected.",
+                    "available_users": available_users,
+                    "hint": "Ensure MongoDB is connected and user is in the collection"
+                },
+                status_code=404
+            )
     
     server = user_servers[user_id]
     
@@ -521,6 +595,7 @@ async def handle_sse(request: Request):
 
 # ============================================================
 # Upload OpenAPI Spec
+# Useless now as MongoDB is required, but may be useful later
 # ============================================================
 async def upload_spec(request: Request):
     """Upload OpenAPI spec for a user"""
@@ -570,6 +645,7 @@ async def upload_spec(request: Request):
 
 # ============================================================
 # Health Check
+# Simple health check endpoint
 # ============================================================
 async def health_check(request: Request):
     """Health check"""
@@ -593,6 +669,7 @@ async def health_check(request: Request):
 
 # ============================================================
 # Debug MongoDB Endpoint
+# Useless now that MongoDB is working but may come in use later
 # ============================================================
 async def debug_mongodb(request: Request):
     """Debug endpoint to check MongoDB connection and data"""
@@ -641,6 +718,8 @@ async def debug_mongodb(request: Request):
 
 # ============================================================
 # Starlette App
+# I used starlette directly to have more control over startup/shutdown and issues in overriding some endpoints in FastAPI.
+# If you figure our a way to do this with FastAPI, let me know. or JUST DO IT
 # ============================================================
 app = Starlette(
     debug=True,
@@ -652,7 +731,11 @@ app = Starlette(
         Mount("/messages/", app=sse.handle_post_message),
     ],
 )
-
+# ============================================================
+#startup and Shutdown Events
+# If any COnfiguration fails here, the server will not start
+# make sure the modules added are being closed properly on shutdown
+# ============================================================
 @app.on_event("startup")
 async def startup():
     """Initialize MongoDB and load specs on startup"""
@@ -690,6 +773,8 @@ async def shutdown():
 
 # ============================================================
 # Main
+# Never use Print as it may corrupt the MCP SSE stream
+# I lost hours debugging this issue
 # ============================================================
 def main():
     host = "0.0.0.0"

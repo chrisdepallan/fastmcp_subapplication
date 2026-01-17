@@ -396,9 +396,140 @@ HARDCODED_SPECS = {
             }
         },
         "base_url": "https://outbound.byteflow.bot"
+    },
+    "2":{
+        "openapi_spec": {
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Reddit API",
+    "version": "1.0.0",
+    "description": "Automatically-generated documentation for the Reddit API."
+  },
+  "servers": [
+    {
+      "url": "https://www.reddit.com",
+      "description": "Production server"
     }
+  ],
+  "paths": {
+    "/api/v1/me": {
+      "get": {
+        "summary": "Returns the identity of the user.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/karma": {
+      "get": {
+        "summary": "Return a breakdown of subreddit karma.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "subreddit": {
+                        "type": "string"
+                      },
+                      "karma": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/prefs": {
+      "get": {
+        "summary": "Return the preference settings of the logged in user",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "beta": {
+                      "type": "boolean"
+                    },
+                    "threaded_messages": {
+                      "type": "boolean"
+                    },
+                    "hide_downs": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://www.reddit.com/api/v1/authorize",
+            "tokenUrl": "https://www.reddit.com/api/v1/access_token",
+            "scopes": {
+              "identity": "Access your identity",
+              "mysubreddits": "Access your subscribed subreddits"
+            }
+          }
+        }
+      }
+    }
+  }
+},
+        "base_url": "https://www.reddit.com"
 }
-
+}
 # Initialize hardcoded specs as fallback
 def init_hardcoded_specs():
     """Initialize servers from hardcoded specs (fallback)"""
